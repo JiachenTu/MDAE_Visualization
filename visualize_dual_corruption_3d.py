@@ -229,25 +229,34 @@ def main():
         plotter.close()
         generated_files.append(save_path.name)
 
-    # Visualization 3: Side-by-side comparison (4-panel)
+    # Visualization 3: Side-by-side comparison (6-panel)
     if 'comparison' in visualizations:
         print("   → Creating side-by-side comparison...")
-        volumes = [clean_volume, spatial_mask, noisy_volume, corrupted_volume]
+        volumes = [
+            clean_volume,
+            spatial_mask,
+            noisy_volume,
+            corrupted_volume,
+            result['masked_only'],
+            result['visible_only']
+        ]
         titles = [
             'Clean Volume',
             f'Spatial Mask ({args.mask_percentage:.0%})',
             f'Noisy Volume (t={args.timestep:.2f})',
-            'Doubly Corrupted'
+            'Doubly Corrupted',
+            'Masked Regions Only',
+            'Visible Regions Only'
         ]
         plotter = create_side_by_side_comparison(
             volumes,
             titles,
             mask=spatial_mask,
             patch_size=args.patch_size,
-            window_size=(2400, 2400),
+            window_size=(3600, 2400),  # Wider for 3 columns
             save_path=None
         )
-        save_path = output_dir / "volume_3d_comparison_4panel.png"
+        save_path = output_dir / "volume_3d_comparison_6panel.png"
         save_publication_image(plotter, str(save_path), dpi=args.dpi)
         plotter.close()
         generated_files.append(save_path.name)

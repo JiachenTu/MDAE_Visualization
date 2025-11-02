@@ -330,14 +330,32 @@ def dual_corruption(
     )
 
     # Step 3: Apply spatial masking to noisy volume
-    # This zeros out the masked regions: x̃ = (1-m) ⊙ x_t
-    # Note: In code, mask=1 means visible, so we use mask directly
+    # Set masked regions to dark values for better visualization contrast
+    # Note: In code, mask=1 means visible, 0=masked
     if has_channel_dim:
         mask_expanded = spatial_mask.unsqueeze(0)
     else:
         mask_expanded = spatial_mask
 
+    # Keep visible regions, set masked regions to low value (darker)
     doubly_corrupted = noisy_volume * mask_expanded
+
+    # Set masked regions to a value below the data range for dark appearance
+    min_val = noisy_volume.min() - 0.5 * noisy_volume.std()
+    doubly_corrupted = doubly_corrupted + min_val * (1 - mask_expanded)
+
+    # Create separated views with transparency for hidden regions
+    sentinel_high = noisy_volume.max() + 100 * noisy_volume.std()  # For masked_only clipping
+    sentinel_low = noisy_volume.min() - 2 * noisy_volume.std()     # For visible_only (renders as dark/transparent)
+
+    # Masked regions only: keep masked regions from doubly_corrupted, hide visible regions
+    masked_only = doubly_corrupted.clone()
+    masked_only = torch.where(mask_expanded > 0.5, sentinel_high, masked_only)
+
+    # Visible regions only: use noisy_volume to show actual MRI brain structure
+    # Set masked regions to very low value (renders as transparent/dark)
+    visible_only = noisy_volume.clone()
+    visible_only = torch.where(mask_expanded < 0.5, sentinel_low, visible_only)
 
     # Prepare return dictionary
     result = {
@@ -350,6 +368,8 @@ def dual_corruption(
         'sigma_t': sigma_t,
         'timestep': timestep,
         'mask_percentage': mask_percentage,
+        'masked_only': masked_only,
+        'visible_only': visible_only,
     }
 
     # Invert mask for loss computation (MDAE computes loss on masked regions only)

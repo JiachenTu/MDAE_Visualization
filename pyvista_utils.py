@@ -84,7 +84,8 @@ def render_3d_volume(
     show_edges: bool = False,
     clim: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
-    camera_position: Optional[str] = None
+    camera_position: Optional[str] = None,
+    clip_outliers: bool = False
 ) -> None:
     """
     Render a 3D volume with transparency using PyVista's built-in opacity functions.
@@ -98,6 +99,7 @@ def render_3d_volume(
         clim: Color limits (min, max). If None, uses 1st-99th percentiles
         title: Plot title
         camera_position: Camera position ('xy', 'xz', 'yz', 'iso')
+        clip_outliers: If True, clip extreme outliers for transparent rendering
     """
     # Convert to numpy if tensor
     if isinstance(volume, torch.Tensor):
@@ -105,7 +107,14 @@ def render_3d_volume(
 
     # Determine color limits from volume
     if clim is None:
-        clim = (np.percentile(volume, 1), np.percentile(volume, 99))
+        if clip_outliers:
+            # For volumes with sentinel values, use robust statistics
+            # Exclude extreme outliers beyond 3 standard deviations
+            mean = np.mean(volume)
+            std = np.std(volume)
+            clim = (mean - 3*std, mean + 3*std)
+        else:
+            clim = (np.percentile(volume, 1), np.percentile(volume, 99))
 
     # Create PyVista grid
     grid = create_pyvista_grid(volume)
@@ -331,8 +340,9 @@ def create_side_by_side_comparison(
         col = idx % shape[1]
         plotter.subplot(row, col)
 
-        # Special handling for mask visualization
-        if mask is not None and 'mask' in title.lower():
+        # Special handling for spatial mask pattern visualization only
+        # Don't apply this to "Masked Regions Only" - that should render actual volume data
+        if mask is not None and title.lower().startswith('spatial mask'):
             render_3d_mask_blocks(
                 mask,
                 plotter,
@@ -343,13 +353,25 @@ def create_side_by_side_comparison(
                 camera_position='iso'
             )
         else:
+            # Use lower transparency for doubly corrupted to show dark masked regions better
+            if 'corrupted' in title.lower() and 'doubly' in title.lower():
+                trans_level = 'low'
+            elif 'visible regions only' in title.lower():
+                trans_level = 'high'  # High transparency to see through cubic surfaces into brain structure
+            else:
+                trans_level = transparency_level
+
+            # Enable outlier clipping only for masked regions (not visible)
+            clip = 'masked regions only' in title.lower()
+
             render_3d_volume(
                 volume,
                 plotter,
-                transparency_level=transparency_level,
+                transparency_level=trans_level,
                 cmap='gray',
                 title=title,
-                camera_position='iso'
+                camera_position='iso',
+                clip_outliers=clip
             )
 
     # Link cameras for synchronized views
