@@ -248,10 +248,10 @@ def main():
             'Masked Regions Only',
             'Visible Regions Only'
         ]
-        # Create opacity masks for panels 5 and 6
+        # Create opacity masks for panels 2, 5, and 6
         opacity_masks = [
             None,  # Clean Volume - default rendering
-            None,  # Spatial Mask - binary mask, no custom opacity needed
+            result['masked_only_opacity'],  # Spatial Mask - show MASKED regions opaque, visible transparent
             None,  # Noisy Volume - default rendering
             None,  # Doubly Corrupted - default rendering
             result['masked_only_opacity'],  # Masked Regions Only - show MASKED regions opaque

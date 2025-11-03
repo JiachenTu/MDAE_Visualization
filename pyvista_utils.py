@@ -359,38 +359,49 @@ def create_side_by_side_comparison(
     if opacity_masks is None:
         opacity_masks = [None] * n_volumes
 
+    # Pre-compute shared clim for noisy and doubly corrupted volumes to ensure consistent rendering
+    shared_clim = {}
+    for idx, (volume, title) in enumerate(zip(volumes, titles)):
+        if 'noisy volume' in title.lower():
+            vol = volume.cpu().numpy() if isinstance(volume, torch.Tensor) else volume
+            shared_clim['noisy'] = (np.percentile(vol, 1), np.percentile(vol, 99))
+            break
+
     # Add each volume to its subplot
     for idx, (volume, title) in enumerate(zip(volumes, titles)):
         row = idx // shape[1]
         col = idx % shape[1]
         plotter.subplot(row, col)
 
-        # Special handling for spatial mask pattern visualization only
-        # Don't apply this to "Masked Regions Only" - that should render actual volume data
-        if mask is not None and title.lower().startswith('spatial mask'):
-            render_3d_mask_blocks(
-                mask,
+        # Special handling for spatial mask with aesthetic colors
+        if 'spatial mask' in title.lower():
+            # Render binary mask with light blue tint for aesthetics
+            render_3d_volume(
+                volume,
                 plotter,
-                patch_size=patch_size,
-                show_visible=True,
-                show_masked=True,
+                transparency_level='low',
+                cmap='Blues_r',  # Reversed Blue colormap: light for 0 (masked), dark blue for 1 (visible)
                 title=title,
-                camera_position='iso'
+                camera_position='iso',
+                clim=(0, 1)  # Force 0-1 range for binary mask
             )
         else:
-            # Use lower transparency for doubly corrupted to show dark masked regions better
-            if 'corrupted' in title.lower() and 'doubly' in title.lower():
-                trans_level = 'low'
-            elif 'visible regions only' in title.lower():
-                trans_level = 'low'  # Low transparency (opaque) to match Doubly Corrupted appearance
+            # Use consistent transparency levels
+            if 'visible regions only' in title.lower() or 'masked regions only' in title.lower():
+                trans_level = 'low'  # Low transparency (opaque) for reconstruction targets
             else:
-                trans_level = transparency_level
+                trans_level = transparency_level  # Default 'medium' for all other panels
 
             # Enable outlier clipping only for masked regions (not visible)
             clip = 'masked regions only' in title.lower()
 
             # Get opacity mask for this volume (if provided)
             opacity_mask = opacity_masks[idx] if idx < len(opacity_masks) else None
+
+            # Determine clim for this panel - use shared clim for doubly corrupted
+            panel_clim = None
+            if 'doubly corrupted' in title.lower():
+                panel_clim = shared_clim.get('noisy', None)  # Use same clim as noisy volume
 
             render_3d_volume(
                 volume,
@@ -400,7 +411,8 @@ def create_side_by_side_comparison(
                 title=title,
                 camera_position='iso',
                 clip_outliers=clip,
-                opacity_mask=opacity_mask
+                opacity_mask=opacity_mask,
+                clim=panel_clim
             )
 
     # Link cameras for synchronized views
