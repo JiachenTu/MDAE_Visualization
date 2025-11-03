@@ -12,12 +12,52 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Union, Dict
 import warnings
 warnings.filterwarnings('ignore')
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+from matplotlib import mathtext
 
 
 # Publication-quality rendering settings
 PUBLICATION_DPI = 300
 WINDOW_SIZE = (1920, 1080)  # 16:9 aspect ratio
 LIGHTING_STYLE = 'three lights'
+
+
+def render_latex_text(text: str, fontsize: int = 14, dpi: int = 150) -> np.ndarray:
+    """
+    Render LaTeX text using matplotlib and return as numpy array.
+
+    Args:
+        text: LaTeX text string (can include $ symbols)
+        fontsize: Font size for rendering
+        dpi: DPI for rendering quality
+
+    Returns:
+        RGB numpy array of rendered text (no alpha channel needed for logo)
+    """
+    # Create a matplotlib figure with the text
+    fig, ax = plt.subplots(figsize=(3, 0.6), dpi=dpi)
+    ax.axis('off')
+    # Use matplotlib's native LaTeX rendering
+    ax.text(0.5, 0.5, text, fontsize=fontsize, ha='center', va='center',
+            transform=ax.transAxes, family='serif')
+
+    # Set figure background to white
+    fig.patch.set_facecolor('white')
+
+    # Render to numpy array
+    fig.canvas.draw()
+    # Use buffer_rgba() for newer matplotlib versions
+    width, height = fig.canvas.get_width_height()
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+    buf = buf.reshape((height, width, 4))
+    plt.close(fig)
+
+    # Convert RGBA to RGB
+    rgb = buf[:, :, :3]
+
+    return rgb
 
 
 def setup_pyvista_plotter(
@@ -176,8 +216,11 @@ def render_3d_volume(
 
     # Add title
     if title:
+        # For LaTeX titles, remove dollar signs for display
+        # PyVista doesn't have built-in LaTeX rendering, so we show clean text
+        clean_title = title.replace('$', '').replace('\\mathbf{', '').replace('}', '').replace('\\', '')
         plotter.add_text(
-            title,
+            clean_title,
             position='upper_edge',
             font_size=16,
             color='black',
@@ -572,6 +615,211 @@ def create_mask_overlay_3d(
 
     # Set camera
     plotter.camera_position = 'iso'
+
+    # Save if requested
+    if save_path:
+        save_publication_image(plotter, save_path)
+
+    return plotter
+
+
+def create_diffusion_progression_3d(
+    clean_volume: Union[torch.Tensor, np.ndarray],
+    timesteps: List[float] = [0.0, 0.25, 0.5, 0.75, 1.0],
+    transparency_level: str = 'medium',
+    window_size: Tuple[int, int] = (4500, 900),
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0,
+    save_path: Optional[str] = None
+) -> pv.Plotter:
+    """
+    Create horizontal progression showing diffusion process from clean to noisy.
+
+    This visualization shows the forward diffusion process without spatial masking,
+    demonstrating how a clean volume progressively becomes corrupted with noise.
+
+    Args:
+        clean_volume: Clean 3D volume [D, H, W]
+        timesteps: List of timesteps to visualize (default: [0.0, 0.25, 0.5, 0.75, 1.0])
+        transparency_level: Transparency level ('low', 'medium', 'high')
+        window_size: Window size (width, height) for the full visualization
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+        save_path: Optional path to save image
+
+    Returns:
+        plotter: PyVista plotter with all volumes rendered
+    """
+    from corruption_utils import apply_noise_corruption
+
+    # Convert to tensor if needed
+    if isinstance(clean_volume, np.ndarray):
+        clean_volume = torch.from_numpy(clean_volume).float()
+
+    n_steps = len(timesteps)
+
+    # Create plotter with horizontal grid
+    plotter = setup_pyvista_plotter(
+        window_size=window_size,
+        off_screen=True,
+        shape=(1, n_steps)  # 1 row, n columns
+    )
+
+    # Compute consistent color limits across all timesteps for uniform rendering
+    # Use clean volume statistics
+    clim = (np.percentile(clean_volume.cpu().numpy(), 1),
+            np.percentile(clean_volume.cpu().numpy(), 99))
+
+    # Render each timestep
+    for idx, t in enumerate(timesteps):
+        plotter.subplot(0, idx)
+
+        # Determine volume to render (no titles)
+        if idx == 0:
+            # First column: clean volume
+            corrupted_volume = clean_volume
+        else:
+            # All other columns: apply noise corruption
+            corrupted_volume, _, alpha_t, sigma_t = apply_noise_corruption(
+                clean_volume, t, sde=sde, max_sigma=max_sigma
+            )
+
+        # No titles for any column
+        title = ''
+
+        # Render volume
+        render_3d_volume(
+            corrupted_volume,
+            plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title=title,
+            camera_position='iso',
+            clim=clim  # Use consistent color limits
+        )
+
+    # Link cameras for synchronized views
+    if n_steps > 1:
+        plotter.link_views()
+
+    # Save if requested
+    if save_path:
+        save_publication_image(plotter, save_path)
+
+    return plotter
+
+
+def create_dual_corruption_grid_3d(
+    clean_volume: Union[torch.Tensor, np.ndarray],
+    diffusion_timesteps: List[float] = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0],
+    masking_ratios: List[float] = [0.0, 0.2, 0.4, 0.6, 0.8, 0.95],
+    patch_size: int = 16,
+    transparency_level: str = 'medium',
+    window_size: Tuple[int, int] = (5400, 5400),
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0,
+    save_path: Optional[str] = None
+) -> pv.Plotter:
+    """
+    Create L-shaped grid showing both diffusion and masking corruption.
+
+    Top row shows diffusion progression (no masking).
+    Left column shows masking progression (no diffusion).
+
+    Args:
+        clean_volume: Clean 3D volume [D, H, W]
+        diffusion_timesteps: Timesteps for top row (default: [0.0, 0.1, 0.25, 0.5, 0.75, 1.0])
+        masking_ratios: Masking ratios for left column (default: [0.0, 0.2, 0.4, 0.6, 0.8, 0.95])
+        patch_size: Patch size for blocky masking
+        transparency_level: Transparency level ('low', 'medium', 'high')
+        window_size: Window size (width, height)
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+        save_path: Optional path to save image
+
+    Returns:
+        plotter: PyVista plotter with L-shaped grid
+    """
+    from corruption_utils import apply_noise_corruption, create_blocky_mask
+
+    # Convert to tensor if needed
+    if isinstance(clean_volume, np.ndarray):
+        clean_volume = torch.from_numpy(clean_volume).float()
+
+    n_cols = len(diffusion_timesteps)
+    n_rows = len(masking_ratios)
+
+    # Create plotter with grid layout
+    plotter = setup_pyvista_plotter(
+        window_size=window_size,
+        off_screen=True,
+        shape=(n_rows, n_cols)
+    )
+
+    # Compute consistent color limits
+    clim = (np.percentile(clean_volume.cpu().numpy(), 1),
+            np.percentile(clean_volume.cpu().numpy(), 99))
+
+    # Render top row: diffusion progression (no masking)
+    for col_idx, t in enumerate(diffusion_timesteps):
+        plotter.subplot(0, col_idx)
+
+        if t == 0.0:
+            corrupted_volume = clean_volume
+        else:
+            corrupted_volume, _, _, _ = apply_noise_corruption(
+                clean_volume, t, sde=sde, max_sigma=max_sigma
+            )
+
+        render_3d_volume(
+            corrupted_volume,
+            plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title='',
+            camera_position='iso',
+            clim=clim
+        )
+
+    # Render left column (starting from row 1): masking progression (no diffusion)
+    # Use "visible regions only" rendering with opacity masks
+    for row_idx in range(1, n_rows):
+        plotter.subplot(row_idx, 0)
+
+        mask_ratio = masking_ratios[row_idx]
+
+        if mask_ratio == 0.0:
+            # No masking, show clean volume without opacity mask
+            opacity_mask = None
+        else:
+            # Create spatial mask for this masking ratio
+            volume_shape = clean_volume.shape if clean_volume.ndim == 3 else clean_volume.shape[1:]
+            spatial_mask = create_blocky_mask(volume_shape, patch_size, mask_ratio)
+
+            # Expand mask if needed
+            if clean_volume.ndim == 4:
+                spatial_mask = spatial_mask.unsqueeze(0)
+
+            # Use mask as opacity: 1=visible (opaque), 0=masked (transparent)
+            opacity_mask = spatial_mask.float()
+
+        # Render clean volume with opacity mask (shows visible regions only)
+        render_3d_volume(
+            clean_volume,
+            plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title='',
+            camera_position='iso',
+            clim=clim,
+            opacity_mask=opacity_mask
+        )
+
+    # Leave other cells empty (rows 1-4, columns 1-4)
+    # PyVista will just show white background for unused subplots
+
+    # Link cameras for synchronized views
+    plotter.link_views()
 
     # Save if requested
     if save_path:
