@@ -85,7 +85,8 @@ def render_3d_volume(
     clim: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
     camera_position: Optional[str] = None,
-    clip_outliers: bool = False
+    clip_outliers: bool = False,
+    opacity_mask: Optional[Union[torch.Tensor, np.ndarray]] = None
 ) -> None:
     """
     Render a 3D volume with transparency using PyVista's built-in opacity functions.
@@ -100,6 +101,7 @@ def render_3d_volume(
         title: Plot title
         camera_position: Camera position ('xy', 'xz', 'yz', 'iso')
         clip_outliers: If True, clip extreme outliers for transparent rendering
+        opacity_mask: Optional custom opacity mask [D, H, W] where 0=transparent, 1=opaque
     """
     # Convert to numpy if tensor
     if isinstance(volume, torch.Tensor):
@@ -119,6 +121,22 @@ def render_3d_volume(
     # Create PyVista grid
     grid = create_pyvista_grid(volume)
 
+    # Apply opacity mask if provided by setting masked regions to NaN
+    # PyVista automatically renders NaN values as transparent
+    if opacity_mask is not None:
+        # Convert opacity mask to numpy
+        if isinstance(opacity_mask, torch.Tensor):
+            opacity_mask = opacity_mask.cpu().numpy()
+
+        # Create a copy of volume to avoid modifying original
+        volume_with_transparency = volume.copy()
+
+        # Set regions where opacity=0 to NaN (will render as transparent)
+        volume_with_transparency[opacity_mask < 0.5] = np.nan
+
+        # Create new grid with transparent regions
+        grid = create_pyvista_grid(volume_with_transparency)
+
     # Use PyVista's built-in opacity strings for brain MRI visualization
     opacity_map = {
         'high': 'sigmoid_10',      # Very transparent
@@ -128,6 +146,7 @@ def render_3d_volume(
     opacity_str = opacity_map.get(transparency_level, 'sigmoid_5')
 
     # Add volume to plotter
+    # Note: PyVista automatically renders NaN values as transparent
     plotter.add_volume(
         grid,
         scalars='values',
@@ -298,7 +317,8 @@ def create_side_by_side_comparison(
     patch_size: int = 16,
     transparency_level: str = 'medium',
     window_size: Tuple[int, int] = (2400, 1200),
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    opacity_masks: Optional[List[Optional[Union[torch.Tensor, np.ndarray]]]] = None
 ) -> pv.Plotter:
     """
     Create side-by-side comparison of corruption stages.
@@ -311,6 +331,7 @@ def create_side_by_side_comparison(
         transparency_level: Transparency level ('low', 'medium', 'high')
         window_size: Window size
         save_path: Optional path to save image
+        opacity_masks: Optional list of opacity masks (one per volume, None for default opacity)
 
     Returns:
         plotter: PyVista plotter with all volumes
@@ -333,6 +354,10 @@ def create_side_by_side_comparison(
         off_screen=True,
         shape=shape
     )
+
+    # Ensure opacity_masks list matches volumes length
+    if opacity_masks is None:
+        opacity_masks = [None] * n_volumes
 
     # Add each volume to its subplot
     for idx, (volume, title) in enumerate(zip(volumes, titles)):
@@ -357,12 +382,15 @@ def create_side_by_side_comparison(
             if 'corrupted' in title.lower() and 'doubly' in title.lower():
                 trans_level = 'low'
             elif 'visible regions only' in title.lower():
-                trans_level = 'high'  # High transparency to see through cubic surfaces into brain structure
+                trans_level = 'low'  # Low transparency (opaque) to match Doubly Corrupted appearance
             else:
                 trans_level = transparency_level
 
             # Enable outlier clipping only for masked regions (not visible)
             clip = 'masked regions only' in title.lower()
+
+            # Get opacity mask for this volume (if provided)
+            opacity_mask = opacity_masks[idx] if idx < len(opacity_masks) else None
 
             render_3d_volume(
                 volume,
@@ -371,7 +399,8 @@ def create_side_by_side_comparison(
                 cmap='gray',
                 title=title,
                 camera_position='iso',
-                clip_outliers=clip
+                clip_outliers=clip,
+                opacity_mask=opacity_mask
             )
 
     # Link cameras for synchronized views

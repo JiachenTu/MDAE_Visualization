@@ -234,11 +234,11 @@ def main():
         print("   → Creating side-by-side comparison...")
         volumes = [
             clean_volume,
-            spatial_mask,
+            result['binary_mask_viz'],  # Panel 2: Binary mask (1=masked, 0=visible)
             noisy_volume,
             corrupted_volume,
-            result['masked_only'],
-            result['visible_only']
+            clean_volume,  # Panel 5: Clean volume (reconstruction target for masked regions)
+            clean_volume   # Panel 6: Clean volume (reconstruction target for visible regions)
         ]
         titles = [
             'Clean Volume',
@@ -248,13 +248,22 @@ def main():
             'Masked Regions Only',
             'Visible Regions Only'
         ]
+        # Create opacity masks for panels 5 and 6
+        opacity_masks = [
+            None,  # Clean Volume - default rendering
+            None,  # Spatial Mask - binary mask, no custom opacity needed
+            None,  # Noisy Volume - default rendering
+            None,  # Doubly Corrupted - default rendering
+            result['masked_only_opacity'],  # Masked Regions Only - show MASKED regions opaque
+            result['visible_only_opacity']  # Visible Regions Only - show VISIBLE regions opaque
+        ]
         plotter = create_side_by_side_comparison(
             volumes,
             titles,
-            mask=spatial_mask,
             patch_size=args.patch_size,
             window_size=(3600, 2400),  # Wider for 3 columns
-            save_path=None
+            save_path=None,
+            opacity_masks=opacity_masks
         )
         save_path = output_dir / "volume_3d_comparison_6panel.png"
         save_publication_image(plotter, str(save_path), dpi=args.dpi)

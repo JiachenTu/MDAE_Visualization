@@ -357,6 +357,18 @@ def dual_corruption(
     visible_only = noisy_volume.clone()
     visible_only = torch.where(mask_expanded < 0.5, sentinel_low, visible_only)
 
+    # Create opacity mask for true transparency in PyVista rendering
+    # 1.0 = opaque (visible regions), 0.0 = transparent (masked regions)
+    visible_only_opacity = mask_expanded.float()
+
+    # Create binary mask for visualization (1=masked, 0=visible)
+    # Invert the spatial_mask: original has 1=visible, 0=masked
+    binary_mask_viz = 1.0 - mask_expanded.float()
+
+    # Create inverted opacity mask for masked-regions-only rendering
+    # 1.0 = opaque (masked regions), 0.0 = transparent (visible regions)
+    masked_only_opacity = 1.0 - mask_expanded.float()
+
     # Prepare return dictionary
     result = {
         'doubly_corrupted': doubly_corrupted,
@@ -370,6 +382,9 @@ def dual_corruption(
         'mask_percentage': mask_percentage,
         'masked_only': masked_only,
         'visible_only': visible_only,
+        'visible_only_opacity': visible_only_opacity,
+        'binary_mask_viz': binary_mask_viz,
+        'masked_only_opacity': masked_only_opacity,
     }
 
     # Invert mask for loss computation (MDAE computes loss on masked regions only)
