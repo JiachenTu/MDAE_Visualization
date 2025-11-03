@@ -392,9 +392,6 @@ def create_side_by_side_comparison(
             else:
                 trans_level = transparency_level  # Default 'medium' for all other panels
 
-            # Enable outlier clipping only for masked regions (not visible)
-            clip = 'masked regions only' in title.lower()
-
             # Get opacity mask for this volume (if provided)
             opacity_mask = opacity_masks[idx] if idx < len(opacity_masks) else None
 
@@ -410,7 +407,7 @@ def create_side_by_side_comparison(
                 cmap='gray',
                 title=title,
                 camera_position='iso',
-                clip_outliers=clip,
+                clip_outliers=False,  # No outlier clipping for consistent rendering
                 opacity_mask=opacity_mask,
                 clim=panel_clim
             )
