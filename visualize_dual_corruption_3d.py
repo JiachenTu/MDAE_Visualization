@@ -237,8 +237,8 @@ def main():
             result['binary_mask_viz'],  # Panel 2: Binary mask (1=masked, 0=visible)
             noisy_volume,
             corrupted_volume,
-            clean_volume,  # Panel 5: Clean volume (reconstruction target for masked regions)
-            clean_volume   # Panel 6: Clean volume (reconstruction target for visible regions)
+            result['masked_regions_viz'],  # Panel 5: Clean with dimmed visible regions (gradient fade)
+            result['visible_regions_viz']  # Panel 6: Clean with dimmed masked regions (gradient fade)
         ]
         titles = [
             'Clean Volume',
@@ -254,8 +254,8 @@ def main():
             result['masked_only_opacity'],  # Spatial Mask - show MASKED regions opaque, visible transparent
             None,  # Noisy Volume - default rendering
             None,  # Doubly Corrupted - default rendering
-            result['masked_only_opacity'],  # Masked Regions Only - show MASKED regions opaque
-            result['visible_only_opacity']  # Visible Regions Only - show VISIBLE regions opaque
+            result['masked_only_opacity'],  # Masked Regions Only - show MASKED regions, transparent visible regions
+            result['visible_only_opacity']  # Visible Regions Only - show VISIBLE regions, transparent masked regions
         ]
         plotter = create_side_by_side_comparison(
             volumes,

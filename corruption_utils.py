@@ -369,6 +369,11 @@ def dual_corruption(
     # 1.0 = opaque (masked regions), 0.0 = transparent (visible regions)
     masked_only_opacity = 1.0 - mask_expanded.float()
 
+    # For panels 5 and 6, use full clean_volume
+    # Opacity masks will handle transparency in rendering (applied in pyvista_utils.py)
+    masked_regions_viz = clean_volume
+    visible_regions_viz = clean_volume
+
     # Prepare return dictionary
     result = {
         'doubly_corrupted': doubly_corrupted,
@@ -385,6 +390,8 @@ def dual_corruption(
         'visible_only_opacity': visible_only_opacity,
         'binary_mask_viz': binary_mask_viz,
         'masked_only_opacity': masked_only_opacity,
+        'masked_regions_viz': masked_regions_viz,
+        'visible_regions_viz': visible_regions_viz,
     }
 
     # Invert mask for loss computation (MDAE computes loss on masked regions only)
