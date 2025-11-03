@@ -718,13 +718,16 @@ def create_dual_corruption_grid_3d(
     window_size: Tuple[int, int] = (5400, 5400),
     sde: str = 'ddpm',
     max_sigma: float = 5.0,
-    save_path: Optional[str] = None
+    save_path: Optional[str] = None,
+    save_individual_center: bool = True,
+    center_save_path: Optional[str] = None
 ) -> pv.Plotter:
     """
     Create L-shaped grid showing both diffusion and masking corruption.
 
     Top row shows diffusion progression (no masking).
     Left column shows masking progression (no diffusion).
+    Center shows large 4×4 dual corrupted volume combining both corruptions.
 
     Args:
         clean_volume: Clean 3D volume [D, H, W]
@@ -735,7 +738,9 @@ def create_dual_corruption_grid_3d(
         window_size: Window size (width, height)
         sde: SDE type ('ddpm', 've', 'flow')
         max_sigma: Maximum sigma for VE SDE
-        save_path: Optional path to save image
+        save_path: Optional path to save grid image
+        save_individual_center: If True, save center volume as standalone image
+        center_save_path: Optional path for standalone center volume (default: auto-generated)
 
     Returns:
         plotter: PyVista plotter with L-shaped grid
@@ -815,12 +820,26 @@ def create_dual_corruption_grid_3d(
             opacity_mask=opacity_mask
         )
 
-    # Render dual corrupted volume at position (4,4) - row 3, col 3 (0-indexed)
+    # Render dual corrupted volume spanning 4×4 grid centered at position (3.5, 3.5)
     # This shows the combination of 4th row's masking (60%) and 4th column's timestep (0.5)
-    plotter.subplot(3, 3)
+    # We'll use a temporary plotter to create the volume, then extract and add to custom renderer
 
     from corruption_utils import dual_corruption
+    import vtk
 
+    # Calculate viewport for 4×4 spanning area centered at position (3.5, 3.5)
+    # In a 6×6 grid, each cell is 1/6 of width/height
+    # Center at (3.5, 3.5) means spanning from cell 1.5 to 5.5 in both dimensions
+    # - x: from 1.5/6 = 0.25 to 5.5/6 ≈ 0.9167
+    # - y: from (1 - 5.5/6) ≈ 0.0833 to (1 - 1.5/6) = 0.75
+    viewport = [0.25, 0.0833, 0.9167, 0.75]  # [xmin, ymin, xmax, ymax]
+
+    # Create a new renderer with this viewport
+    renderer = vtk.vtkRenderer()
+    renderer.SetViewport(*viewport)
+    renderer.SetBackground(1.0, 1.0, 1.0)  # White background
+
+    # Generate dual corrupted volume
     dual_result = dual_corruption(
         clean_volume,
         mask_percentage=masking_ratios[3],  # 0.6 (60% masked)
@@ -830,17 +849,92 @@ def create_dual_corruption_grid_3d(
 
     dual_corrupted = dual_result['doubly_corrupted']
 
-    render_3d_volume(
-        dual_corrupted,
-        plotter,
-        transparency_level=transparency_level,
+    # Convert to numpy for PyVista
+    if isinstance(dual_corrupted, torch.Tensor):
+        dual_corrupted_np = dual_corrupted.cpu().numpy()
+    else:
+        dual_corrupted_np = dual_corrupted
+
+    # Create PyVista grid
+    grid = create_pyvista_grid(dual_corrupted_np)
+
+    # Map opacity level to PyVista string
+    opacity_map = {
+        'high': 'sigmoid_10',
+        'medium': 'sigmoid_5',
+        'low': 'sigmoid_3'
+    }
+    opacity_str = opacity_map.get(transparency_level, 'sigmoid_5')
+
+    # Create a temporary PyVista plotter to generate the volume actor
+    temp_plotter = pv.Plotter(off_screen=True)
+    temp_plotter.add_volume(
+        grid,
+        scalars='values',
         cmap='gray',
-        title='',
-        camera_position='iso',
-        clim=clim
+        opacity=opacity_str,
+        clim=clim,
+        show_scalar_bar=False
     )
 
-    # Leave other cells empty
+    # Set isometric view for consistency
+    temp_plotter.view_isometric()
+
+    # Extract the volume actor from the temporary plotter
+    volume_actor = temp_plotter.renderer.actors.values()
+    volume_actor = list(volume_actor)[0]  # Get the first (and only) actor
+
+    # Add the volume actor to our custom renderer
+    renderer.AddActor(volume_actor)
+
+    # Set camera for this renderer to match the isometric view
+    camera = renderer.GetActiveCamera()
+    camera.SetPosition(1, 1, 1)
+    camera.SetFocalPoint(0, 0, 0)
+    camera.SetViewUp(0, 0, 1)
+    renderer.ResetCamera()
+
+    # Add renderer to main plotter's render window
+    plotter.ren_win.AddRenderer(renderer)
+
+    # Close temporary plotter
+    temp_plotter.close()
+
+    # Save individual center volume as standalone image if requested
+    if save_individual_center:
+        # Create a standalone plotter for the center dual corrupted volume
+        standalone_plotter = setup_pyvista_plotter(
+            window_size=(1800, 1800),  # Square aspect ratio for single volume
+            off_screen=True,
+            shape=(1, 1)
+        )
+
+        # Render the dual corrupted volume
+        render_3d_volume(
+            dual_corrupted,
+            standalone_plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title='',  # No title for standalone
+            camera_position='iso',
+            clim=clim
+        )
+
+        # Determine save path for individual center volume
+        if center_save_path is None:
+            # Auto-generate path from grid save_path or use default
+            if save_path:
+                from pathlib import Path
+                grid_path = Path(save_path)
+                center_save_path = str(grid_path.parent / f"{grid_path.stem}_center{grid_path.suffix}")
+            else:
+                center_save_path = "outputs/dual_corrupted_center_volume.png"
+
+        # Save standalone center volume
+        save_publication_image(standalone_plotter, center_save_path)
+        standalone_plotter.close()
+
+    # Leave cells (3,3) through (5,5) empty in the regular grid
     # PyVista will show white background for unused subplots
 
     # Link cameras for synchronized views

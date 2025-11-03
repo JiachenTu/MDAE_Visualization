@@ -35,10 +35,7 @@ warnings.filterwarnings('ignore')
 
 # Import our utilities
 from data_loader_utils import load_brats_sample, create_synthetic_brain_volume
-from pyvista_utils import (
-    create_dual_corruption_grid_3d,
-    save_publication_image
-)
+from pyvista_utils import create_dual_corruption_grid_3d
 
 
 def main():
@@ -155,6 +152,10 @@ def main():
     print(f"   SDE type: {args.sde}")
     print(f"   Transparency: {args.transparency}")
 
+    # Define save paths
+    grid_save_path = output_dir / "dual_corruption_grid_3d.png"
+    center_save_path = output_dir / "dual_corrupted_center_volume.png"
+
     plotter = create_dual_corruption_grid_3d(
         volume,
         diffusion_timesteps=args.timesteps,
@@ -162,28 +163,32 @@ def main():
         patch_size=16,
         transparency_level=args.transparency,
         sde=args.sde,
-        save_path=None
+        save_path=str(grid_save_path),
+        save_individual_center=True,
+        center_save_path=str(center_save_path)
     )
 
-    save_path = output_dir / "dual_corruption_grid_3d.png"
-    save_publication_image(plotter, str(save_path), dpi=args.dpi)
+    # Note: save_publication_image is called inside create_dual_corruption_grid_3d
     plotter.close()
 
     # Summary
     print("\n" + "=" * 80)
     print("✓ Dual corruption grid visualization generated successfully!")
     print("=" * 80)
-    print(f"\nOutput file: {save_path.absolute()}")
+    print(f"\nOutput files:")
+    print(f"  1. Grid visualization: {grid_save_path.absolute()}")
+    print(f"  2. Center volume (standalone): {center_save_path.absolute()}")
 
     print("\nVisualization Details:")
     print(f"  - Volume shape: {volume.shape}")
     print(f"  - Top row (diffusion): {len(args.timesteps)} timesteps")
     print(f"  - Left column (masking): 6 masking ratios (0-95%)")
+    print(f"  - Center volume: 4×4 grid (60% masking + t=0.5 diffusion)")
     print(f"  - SDE type: {args.sde}")
     print(f"  - Transparency: {args.transparency}")
     print(f"  - Image DPI: {args.dpi}")
 
-    print("\n3D dual corruption grid is ready for publication!")
+    print("\n3D dual corruption grid and standalone center volume ready for publication!")
 
     return 0
 
