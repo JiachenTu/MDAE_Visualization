@@ -126,7 +126,8 @@ def render_3d_volume(
     title: Optional[str] = None,
     camera_position: Optional[str] = None,
     clip_outliers: bool = False,
-    opacity_mask: Optional[Union[torch.Tensor, np.ndarray]] = None
+    opacity_mask: Optional[Union[torch.Tensor, np.ndarray]] = None,
+    use_uniform_opacity: bool = False
 ) -> None:
     """
     Render a 3D volume with transparency using PyVista's built-in opacity functions.
@@ -142,6 +143,7 @@ def render_3d_volume(
         camera_position: Camera position ('xy', 'xz', 'yz', 'iso')
         clip_outliers: If True, clip extreme outliers for transparent rendering
         opacity_mask: Optional custom opacity mask [D, H, W] where 0=transparent, 1=opaque
+        use_uniform_opacity: If True, use uniform opacity=1.0 (for mask panels)
     """
     # Convert to numpy if tensor
     if isinstance(volume, torch.Tensor):
@@ -178,12 +180,18 @@ def render_3d_volume(
         grid = create_pyvista_grid(volume_with_transparency)
 
     # Use PyVista's built-in opacity strings for brain MRI visualization
-    opacity_map = {
-        'high': 'sigmoid_10',      # Very transparent
-        'medium': 'sigmoid_5',     # Medium transparency
-        'low': 'sigmoid_3'         # Less transparent
-    }
-    opacity_str = opacity_map.get(transparency_level, 'sigmoid_5')
+    # If use_uniform_opacity is True (for mask panels), use solid opacity
+    if use_uniform_opacity:
+        # Use uniform opacity - let NaN masking handle transparency
+        opacity_value = 1.0
+    else:
+        # Use sigmoid opacity functions for natural volume rendering
+        opacity_map = {
+            'high': 'sigmoid_10',      # Very transparent
+            'medium': 'sigmoid_5',     # Medium transparency
+            'low': 'sigmoid_3'         # Less transparent
+        }
+        opacity_value = opacity_map.get(transparency_level, 'sigmoid_5')
 
     # Add volume to plotter
     # Note: PyVista automatically renders NaN values as transparent
@@ -191,7 +199,7 @@ def render_3d_volume(
         grid,
         scalars='values',
         cmap=cmap,
-        opacity=opacity_str,
+        opacity=opacity_value,
         clim=clim,
         show_scalar_bar=False
     )
@@ -361,7 +369,9 @@ def create_side_by_side_comparison(
     transparency_level: str = 'medium',
     window_size: Tuple[int, int] = (2400, 1200),
     save_path: Optional[str] = None,
-    opacity_masks: Optional[List[Optional[Union[torch.Tensor, np.ndarray]]]] = None
+    opacity_masks: Optional[List[Optional[Union[torch.Tensor, np.ndarray]]]] = None,
+    grid_shape: Optional[Tuple[int, int]] = None,
+    panel_positions: Optional[List[Tuple[int, int]]] = None
 ) -> pv.Plotter:
     """
     Create side-by-side comparison of corruption stages.
@@ -375,6 +385,8 @@ def create_side_by_side_comparison(
         window_size: Window size
         save_path: Optional path to save image
         opacity_masks: Optional list of opacity masks (one per volume, None for default opacity)
+        grid_shape: Optional custom grid shape (rows, cols). If None, auto-determined
+        panel_positions: Optional list of (row, col) positions for each panel. If None, auto-positioned
 
     Returns:
         plotter: PyVista plotter with all volumes
@@ -382,7 +394,9 @@ def create_side_by_side_comparison(
     n_volumes = len(volumes)
 
     # Determine grid shape (prefer 2x2 for 4 volumes)
-    if n_volumes == 4:
+    if grid_shape is not None:
+        shape = grid_shape
+    elif n_volumes == 4:
         shape = (2, 2)
     elif n_volumes <= 3:
         shape = (1, n_volumes)
@@ -412,21 +426,27 @@ def create_side_by_side_comparison(
 
     # Add each volume to its subplot
     for idx, (volume, title) in enumerate(zip(volumes, titles)):
-        row = idx // shape[1]
-        col = idx % shape[1]
+        # Use custom panel positions if provided, otherwise auto-position
+        if panel_positions is not None:
+            row, col = panel_positions[idx]
+        else:
+            row = idx // shape[1]
+            col = idx % shape[1]
         plotter.subplot(row, col)
 
-        # Special handling for spatial mask with aesthetic colors
-        if 'spatial mask' in title.lower():
-            # Render binary mask with light blue tint for aesthetics
+        # Special handling for spatial mask and visible mask with aesthetic colors
+        if 'spatial mask' in title.lower() or 'visible mask' in title.lower():
+            # Render binary mask with blue colormap and solid opacity
             render_3d_volume(
                 volume,
                 plotter,
-                transparency_level='low',
-                cmap='Blues_r',  # Reversed Blue colormap: light for 0 (masked), dark blue for 1 (visible)
+                transparency_level='medium',  # Ignored when use_uniform_opacity=True
+                cmap='Blues',  # Blue colormap: dark for 0, light blue for 1
                 title=title,
                 camera_position='iso',
-                clim=(0, 1)  # Force 0-1 range for binary mask
+                clim=(0, 1),  # Force 0-1 range for binary mask
+                opacity_mask=opacity_masks[idx] if idx < len(opacity_masks) else None,
+                use_uniform_opacity=True  # Use solid opacity for clear mask visualization
             )
         else:
             # Use consistent transparency levels
@@ -936,6 +956,128 @@ def create_dual_corruption_grid_3d(
 
     # Leave cells (3,3) through (5,5) empty in the regular grid
     # PyVista will show white background for unused subplots
+
+    # Link cameras for synchronized views
+    plotter.link_views()
+
+    # Save if requested
+    if save_path:
+        save_publication_image(plotter, save_path)
+
+    return plotter
+
+
+def create_l_shaped_grid_simple(
+    clean_volume: Union[torch.Tensor, np.ndarray],
+    diffusion_timesteps: List[float] = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0],
+    masking_ratios: List[float] = [0.0, 0.2, 0.4, 0.6, 0.8, 0.95],
+    patch_size: int = 16,
+    transparency_level: str = 'medium',
+    window_size: Tuple[int, int] = (5400, 5400),
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0,
+    save_path: Optional[str] = None
+) -> pv.Plotter:
+    """
+    Create simplified L-shaped grid showing diffusion and masking corruption.
+
+    This is a simplified version that only shows:
+    - Top row: Diffusion progression (no masking)
+    - Left column: Masking progression (no diffusion)
+
+    No large center volume is rendered.
+
+    Args:
+        clean_volume: Clean 3D volume [D, H, W]
+        diffusion_timesteps: Timesteps for top row (default: [0.0, 0.1, 0.25, 0.5, 0.75, 1.0])
+        masking_ratios: Masking ratios for left column (default: [0.0, 0.2, 0.4, 0.6, 0.8, 0.95])
+        patch_size: Patch size for blocky masking
+        transparency_level: Transparency level ('low', 'medium', 'high')
+        window_size: Window size (width, height)
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+        save_path: Optional path to save grid image
+
+    Returns:
+        plotter: PyVista plotter with L-shaped grid
+    """
+    from corruption_utils import apply_noise_corruption, create_blocky_mask
+
+    # Convert to tensor if needed
+    if isinstance(clean_volume, np.ndarray):
+        clean_volume = torch.from_numpy(clean_volume).float()
+
+    n_cols = len(diffusion_timesteps)
+    n_rows = len(masking_ratios)
+
+    # Create plotter with grid layout
+    plotter = setup_pyvista_plotter(
+        window_size=window_size,
+        off_screen=True,
+        shape=(n_rows, n_cols)
+    )
+
+    # Compute consistent color limits
+    clim = (np.percentile(clean_volume.cpu().numpy(), 1),
+            np.percentile(clean_volume.cpu().numpy(), 99))
+
+    # Render top row: diffusion progression (no masking)
+    for col_idx, t in enumerate(diffusion_timesteps):
+        plotter.subplot(0, col_idx)
+
+        if t == 0.0:
+            corrupted_volume = clean_volume
+        else:
+            corrupted_volume, _, _, _ = apply_noise_corruption(
+                clean_volume, t, sde=sde, max_sigma=max_sigma
+            )
+
+        render_3d_volume(
+            corrupted_volume,
+            plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title='',
+            camera_position='iso',
+            clim=clim
+        )
+
+    # Render left column (starting from row 1): masking progression (no diffusion)
+    # Use "visible regions only" rendering with opacity masks
+    for row_idx in range(1, n_rows):
+        plotter.subplot(row_idx, 0)
+
+        mask_ratio = masking_ratios[row_idx]
+
+        if mask_ratio == 0.0:
+            # No masking, show clean volume without opacity mask
+            opacity_mask = None
+        else:
+            # Create spatial mask for this masking ratio
+            volume_shape = clean_volume.shape if clean_volume.ndim == 3 else clean_volume.shape[1:]
+            spatial_mask = create_blocky_mask(volume_shape, patch_size, mask_ratio)
+
+            # Expand mask if needed
+            if clean_volume.ndim == 4:
+                spatial_mask = spatial_mask.unsqueeze(0)
+
+            # Use mask as opacity: 1=visible (opaque), 0=masked (transparent)
+            opacity_mask = spatial_mask.float()
+
+        # Render clean volume with opacity mask (shows visible regions only)
+        render_3d_volume(
+            clean_volume,
+            plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title='',
+            camera_position='iso',
+            clim=clim,
+            opacity_mask=opacity_mask
+        )
+
+    # Leave rest of grid empty (will show white background)
+    # No center volume rendering in this simplified version
 
     # Link cameras for synchronized views
     plotter.link_views()
