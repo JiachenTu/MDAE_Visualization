@@ -815,8 +815,33 @@ def create_dual_corruption_grid_3d(
             opacity_mask=opacity_mask
         )
 
-    # Leave other cells empty (rows 1-4, columns 1-4)
-    # PyVista will just show white background for unused subplots
+    # Render dual corrupted volume at position (4,4) - row 3, col 3 (0-indexed)
+    # This shows the combination of 4th row's masking (60%) and 4th column's timestep (0.5)
+    plotter.subplot(3, 3)
+
+    from corruption_utils import dual_corruption
+
+    dual_result = dual_corruption(
+        clean_volume,
+        mask_percentage=masking_ratios[3],  # 0.6 (60% masked)
+        timestep=diffusion_timesteps[3],    # t=0.5
+        patch_size=patch_size
+    )
+
+    dual_corrupted = dual_result['doubly_corrupted']
+
+    render_3d_volume(
+        dual_corrupted,
+        plotter,
+        transparency_level=transparency_level,
+        cmap='gray',
+        title='',
+        camera_position='iso',
+        clim=clim
+    )
+
+    # Leave other cells empty
+    # PyVista will show white background for unused subplots
 
     # Link cameras for synchronized views
     plotter.link_views()
