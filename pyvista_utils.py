@@ -388,7 +388,7 @@ def create_side_by_side_comparison(
         else:
             # Use consistent transparency levels
             if 'visible regions only' in title.lower() or 'masked regions only' in title.lower():
-                trans_level = 'low'  # Low transparency (opaque) for reconstruction targets
+                trans_level = 'medium'  # Match clean volume transparency for natural background
             else:
                 trans_level = transparency_level  # Default 'medium' for all other panels
 
