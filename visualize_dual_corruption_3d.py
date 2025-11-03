@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-MDAE 3D Dual Corruption Visualization Script using PyVista
+MDAE 3D Dual Corruption 6-Panel Visualization Script
 
-This script generates high-quality 3D volume renderings showing the MDAE dual
-corruption strategy using PyVista for interactive volume visualization.
+This script generates a high-quality 6-panel 3D volume rendering showing the
+complete MDAE dual corruption pipeline using PyVista.
 
-Features:
-- 3D transparent volume rendering of brain MRI
-- 3D visualization of blocky masking patterns
-- Side-by-side comparison of corruption stages
-- Multi-angle views (axial, sagittal, coronal, isometric)
-- Publication-quality static images
+The 6 panels show:
+1. Clean Volume - Original MRI volume
+2. Spatial Mask - Blocky masking pattern (75% masked)
+3. Noisy Volume - After diffusion noise corruption
+4. Doubly Corrupted - After both noise and spatial masking
+5. Masked Regions Only - Reconstruction target for masked regions
+6. Visible Regions Only - Visible context for the model
 
 Usage:
-    # Generate all 3D visualizations
+    # Generate 6-panel visualization with default settings
     python visualize_dual_corruption_3d.py
 
     # Use specific dataset and modality
@@ -29,8 +30,6 @@ Date: November 2025
 import argparse
 import sys
 from pathlib import Path
-import torch
-import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -38,19 +37,14 @@ warnings.filterwarnings('ignore')
 from data_loader_utils import load_brats_sample, create_synthetic_brain_volume
 from corruption_utils import dual_corruption
 from pyvista_utils import (
-    setup_pyvista_plotter,
-    render_3d_volume,
-    render_3d_mask_blocks,
     create_side_by_side_comparison,
-    render_multiview,
-    create_mask_overlay_3d,
     save_publication_image
 )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate 3D visualizations of MDAE dual corruption using PyVista"
+        description="Generate 6-panel 3D visualization of MDAE dual corruption pipeline"
     )
     parser.add_argument(
         '--use-synthetic',
@@ -113,20 +107,12 @@ def main():
         default=16,
         help='Patch size for blocky masking (default: 16)'
     )
-    parser.add_argument(
-        '--visualizations',
-        type=str,
-        nargs='+',
-        default=['all'],
-        choices=['all', 'volume', 'mask', 'comparison', 'multiview', 'overlay'],
-        help='Which visualizations to generate (default: all)'
-    )
 
     args = parser.parse_args()
 
     # Setup
     print("=" * 80)
-    print("MDAE 3D Dual Corruption Visualization (PyVista)")
+    print("MDAE 3D Dual Corruption 6-Panel Visualization")
     print("=" * 80)
 
     output_dir = Path(args.output_dir)
@@ -134,12 +120,6 @@ def main():
 
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-
-    # Determine which visualizations to generate
-    if 'all' in args.visualizations:
-        visualizations = ['volume', 'mask', 'comparison', 'multiview', 'overlay']
-    else:
-        visualizations = args.visualizations
 
     # Load volume
     print("\n1. Loading volume...")
@@ -187,127 +167,54 @@ def main():
     print(f"   ✓ Dual corruption applied")
     print(f"   Alpha(t): {result['alpha_t']:.4f}, Sigma(t): {result['sigma_t']:.4f}")
 
-    # Generate visualizations
-    print(f"\n3. Generating 3D visualizations...")
-    generated_files = []
+    # Generate 6-panel visualization
+    print(f"\n3. Generating 6-panel 3D visualization...")
+    print("   → Creating 6-panel comparison...")
 
-    # Visualization 1: Clean volume with transparent rendering
-    if 'volume' in visualizations:
-        print("   → Rendering clean volume (transparent)...")
+    volumes = [
+        clean_volume,
+        result['binary_mask_viz'],  # Panel 2: Binary mask (1=masked, 0=visible)
+        noisy_volume,
+        corrupted_volume,
+        result['masked_regions_viz'],  # Panel 5: Clean with dimmed visible regions (gradient fade)
+        result['visible_regions_viz']  # Panel 6: Clean with dimmed masked regions (gradient fade)
+    ]
+    titles = [
+        'Clean Volume',
+        f'Spatial Mask ({args.mask_percentage:.0%})',
+        f'Noisy Volume (t={args.timestep:.2f})',
+        'Doubly Corrupted',
+        'Masked Regions Only',
+        'Visible Regions Only'
+    ]
+    # Create opacity masks for panels 2, 5, and 6
+    opacity_masks = [
+        None,  # Clean Volume - default rendering
+        result['masked_only_opacity'],  # Spatial Mask - show MASKED regions opaque, visible transparent
+        None,  # Noisy Volume - default rendering
+        None,  # Doubly Corrupted - default rendering
+        result['masked_only_opacity'],  # Masked Regions Only - show MASKED regions, transparent visible regions
+        result['visible_only_opacity']  # Visible Regions Only - show VISIBLE regions, transparent masked regions
+    ]
 
-        plotter = setup_pyvista_plotter(window_size=(1920, 1080), off_screen=True)
-        render_3d_volume(
-            clean_volume,
-            plotter,
-            cmap='gray',
-            title='Clean MRI Volume',
-            camera_position='iso'
-        )
-        save_path = output_dir / "volume_3d_clean.png"
-        save_publication_image(plotter, str(save_path), dpi=args.dpi)
-        plotter.close()
-        generated_files.append(save_path.name)
+    plotter = create_side_by_side_comparison(
+        volumes,
+        titles,
+        patch_size=args.patch_size,
+        window_size=(3600, 2400),  # Wider for 3 columns
+        save_path=None,
+        opacity_masks=opacity_masks
+    )
 
-    # Visualization 2: 3D blocky mask pattern
-    if 'mask' in visualizations:
-        print("   → Rendering 3D blocky mask pattern...")
-        plotter = setup_pyvista_plotter(window_size=(1920, 1080), off_screen=True)
-        render_3d_mask_blocks(
-            spatial_mask,
-            plotter,
-            patch_size=args.patch_size,
-            visible_color='lightgreen',
-            masked_color='lightcoral',
-            opacity=0.7,
-            show_visible=True,
-            show_masked=True,
-            title=f'Blocky Spatial Mask ({args.mask_percentage:.0%} masked)',
-            camera_position='iso'
-        )
-        save_path = output_dir / "volume_3d_mask_pattern.png"
-        save_publication_image(plotter, str(save_path), dpi=args.dpi)
-        plotter.close()
-        generated_files.append(save_path.name)
-
-    # Visualization 3: Side-by-side comparison (6-panel)
-    if 'comparison' in visualizations:
-        print("   → Creating side-by-side comparison...")
-        volumes = [
-            clean_volume,
-            result['binary_mask_viz'],  # Panel 2: Binary mask (1=masked, 0=visible)
-            noisy_volume,
-            corrupted_volume,
-            result['masked_regions_viz'],  # Panel 5: Clean with dimmed visible regions (gradient fade)
-            result['visible_regions_viz']  # Panel 6: Clean with dimmed masked regions (gradient fade)
-        ]
-        titles = [
-            'Clean Volume',
-            f'Spatial Mask ({args.mask_percentage:.0%})',
-            f'Noisy Volume (t={args.timestep:.2f})',
-            'Doubly Corrupted',
-            'Masked Regions Only',
-            'Visible Regions Only'
-        ]
-        # Create opacity masks for panels 2, 5, and 6
-        opacity_masks = [
-            None,  # Clean Volume - default rendering
-            result['masked_only_opacity'],  # Spatial Mask - show MASKED regions opaque, visible transparent
-            None,  # Noisy Volume - default rendering
-            None,  # Doubly Corrupted - default rendering
-            result['masked_only_opacity'],  # Masked Regions Only - show MASKED regions, transparent visible regions
-            result['visible_only_opacity']  # Visible Regions Only - show VISIBLE regions, transparent masked regions
-        ]
-        plotter = create_side_by_side_comparison(
-            volumes,
-            titles,
-            patch_size=args.patch_size,
-            window_size=(3600, 2400),  # Wider for 3 columns
-            save_path=None,
-            opacity_masks=opacity_masks
-        )
-        save_path = output_dir / "volume_3d_comparison_6panel.png"
-        save_publication_image(plotter, str(save_path), dpi=args.dpi)
-        plotter.close()
-        generated_files.append(save_path.name)
-
-    # Visualization 4: Multi-angle views
-    if 'multiview' in visualizations:
-        print("   → Rendering multi-angle views...")
-        plotter = render_multiview(
-            clean_volume,
-            views=['xy', 'xz', 'yz', 'iso'],
-            titles=['Axial', 'Coronal', 'Sagittal', '3D Isometric'],
-            window_size=(2400, 2400),
-            save_path=None
-        )
-        save_path = output_dir / "volume_3d_multiview.png"
-        save_publication_image(plotter, str(save_path), dpi=args.dpi)
-        plotter.close()
-        generated_files.append(save_path.name)
-
-    # Visualization 5: Volume with mask overlay
-    if 'overlay' in visualizations:
-        print("   → Creating volume with mask overlay...")
-        plotter = create_mask_overlay_3d(
-            clean_volume,
-            spatial_mask,
-            patch_size=args.patch_size,
-            window_size=(1920, 1080),
-            save_path=None
-        )
-        save_path = output_dir / "volume_3d_mask_overlay.png"
-        save_publication_image(plotter, str(save_path), dpi=args.dpi)
-        plotter.close()
-        generated_files.append(save_path.name)
+    save_path = output_dir / "volume_3d_comparison_6panel.png"
+    save_publication_image(plotter, str(save_path), dpi=args.dpi)
+    plotter.close()
 
     # Summary
     print("\n" + "=" * 80)
-    print("✓ All 3D visualizations generated successfully!")
+    print("✓ 6-panel visualization generated successfully!")
     print("=" * 80)
-    print(f"\nOutput directory: {output_dir.absolute()}")
-    print(f"Generated files ({len(generated_files)}):")
-    for f in generated_files:
-        print(f"  - {f}")
+    print(f"\nOutput file: {save_path.absolute()}")
 
     print("\nVisualization Details:")
     print(f"  - Volume shape: {volume.shape}")
@@ -318,7 +225,7 @@ def main():
     print(f"  - Number of patches: {(volume.shape[0]//args.patch_size)**3}")
     print(f"  - Image DPI: {args.dpi}")
 
-    print("\nThese 3D visualizations are ready for publication!")
+    print("\n6-panel visualization is ready for publication!")
 
     return 0
 
