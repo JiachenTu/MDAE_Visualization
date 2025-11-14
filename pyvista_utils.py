@@ -1089,6 +1089,529 @@ def create_l_shaped_grid_simple(
     return plotter
 
 
+def create_fig1_row(
+    clean_volume: Union[torch.Tensor, np.ndarray],
+    num_corrupted_samples: int = 5,
+    patch_size: int = 16,
+    transparency_level: str = 'medium',
+    window_size: Optional[Tuple[int, int]] = None,
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0,
+    corruption_min: float = 0.0,
+    corruption_max: float = 0.95,
+    save_path: Optional[str] = None
+) -> pv.Plotter:
+    """
+    Create Figure 1 visualization: horizontal row showing progression from clean to corrupted.
+
+    Creates a single row with:
+    - Leftmost panel: Clean volume (no corruption)
+    - Remaining panels: MDAE dual-corrupted volumes with increasing masking ratio AND noise level
+
+    Both masking ratio and timestep progress together linearly from corruption_min to corruption_max.
+
+    Args:
+        clean_volume: Clean 3D volume [D, H, W]
+        num_corrupted_samples: Number of corrupted samples (default: 5)
+            Total panels = 1 (clean) + num_corrupted_samples
+        patch_size: Patch size for blocky masking (default: 16)
+        transparency_level: Transparency level ('low', 'medium', 'high')
+        window_size: Window size (width, height). If None, auto-calculated based on num_corrupted_samples
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+        corruption_min: Minimum corruption level (default: 0.0)
+        corruption_max: Maximum corruption level (default: 0.95)
+        save_path: Optional path to save image
+
+    Returns:
+        plotter: PyVista plotter with row visualization
+    """
+    from corruption_utils import dual_corruption
+
+    # Convert to tensor if needed
+    if isinstance(clean_volume, np.ndarray):
+        clean_volume = torch.from_numpy(clean_volume).float()
+
+    # Total number of panels
+    total_panels = 1 + num_corrupted_samples
+
+    # Auto-calculate window size if not provided (900px height, scale width by panel count)
+    if window_size is None:
+        panel_width = 900
+        window_size = (panel_width * total_panels, 900)
+
+    # Create plotter with horizontal grid
+    plotter = setup_pyvista_plotter(
+        window_size=window_size,
+        off_screen=True,
+        shape=(1, total_panels)  # 1 row, total_panels columns
+    )
+
+    # Compute consistent color limits across all panels
+    clim = (np.percentile(clean_volume.cpu().numpy(), 1),
+            np.percentile(clean_volume.cpu().numpy(), 99))
+
+    # Panel 0: Clean volume
+    plotter.subplot(0, 0)
+    render_3d_volume(
+        clean_volume,
+        plotter,
+        transparency_level=transparency_level,
+        cmap='gray',
+        title='',
+        camera_position='iso',
+        clim=clim
+    )
+
+    # Panels 1 to num_corrupted_samples: Progressively corrupted
+    # Generate linearly spaced corruption parameters from corruption_min to corruption_max
+    if num_corrupted_samples > 1:
+        corruption_levels = np.linspace(corruption_min, corruption_max, num_corrupted_samples)
+    else:
+        corruption_levels = [corruption_max]  # If only 1 sample, use maximum corruption
+
+    for idx, corruption_level in enumerate(corruption_levels):
+        panel_idx = idx + 1  # Offset by 1 (panel 0 is clean)
+        plotter.subplot(0, panel_idx)
+
+        # Apply dual corruption with same value for both masking and timestep
+        mask_ratio = corruption_level
+        timestep = corruption_level
+
+        # Handle edge case: if corruption_level is 0.0, just show clean volume
+        if corruption_level < 0.01:
+            corrupted_volume = clean_volume
+        else:
+            dual_result = dual_corruption(
+                clean_volume,
+                mask_percentage=mask_ratio,
+                timestep=timestep,
+                patch_size=patch_size,
+                sde=sde,
+                max_sigma=max_sigma
+            )
+            corrupted_volume = dual_result['doubly_corrupted']
+
+        # Render corrupted volume
+        render_3d_volume(
+            corrupted_volume,
+            plotter,
+            transparency_level=transparency_level,
+            cmap='gray',
+            title='',
+            camera_position='iso',
+            clim=clim
+        )
+
+    # Link cameras for synchronized views
+    if total_panels > 1:
+        plotter.link_views()
+
+    # Save if requested
+    if save_path:
+        save_publication_image(plotter, save_path)
+
+    return plotter
+
+
+def create_comparison_4rows(
+    clean_volume: Union[torch.Tensor, np.ndarray],
+    num_corrupted_samples: int = 5,
+    corruption_levels: Optional[List[float]] = None,
+    mask_percentage: float = 0.75,
+    patch_size: int = 16,
+    transparency_level: str = 'medium',
+    window_size: Optional[Tuple[int, int]] = None,
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0,
+    save_path: Optional[str] = None
+) -> pv.Plotter:
+    """
+    Create 4-row comparison visualization showing MAE, Diffusion, DiffMAE, and MDAE.
+
+    Rows:
+    - Row 1 (MAE): 75% masking only, different patterns, no noise
+    - Row 2 (Diffusion): DDPM noise only at different levels, no masking
+    - Row 3 (DiffMAE): 75% masking + DDPM noise ONLY on masked regions
+    - Row 4 (MDAE): Progressive dual corruption (masking + noise both increase)
+
+    Args:
+        clean_volume: Clean 3D volume [D, H, W]
+        num_corrupted_samples: Number of corrupted samples per row (default: 5)
+        corruption_levels: Corruption levels for noise (default: [0.2, 0.375, 0.55, 0.725, 0.9])
+        mask_percentage: Masking percentage for MAE/DiffMAE (default: 0.75)
+        patch_size: Patch size for blocky masking
+        transparency_level: Transparency level ('low', 'medium', 'high')
+        window_size: Window size (width, height). If None, auto-calculated
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+        save_path: Optional path to save image
+
+    Returns:
+        plotter: PyVista plotter with 4×(num_corrupted_samples+1) grid
+    """
+    from corruption_utils import mae_corruption, diffmae_corruption, dual_corruption, corrupt
+
+    # Convert to tensor if needed
+    if isinstance(clean_volume, np.ndarray):
+        clean_volume = torch.from_numpy(clean_volume).float()
+
+    # Default corruption levels
+    if corruption_levels is None:
+        corruption_levels = list(np.linspace(0.2, 0.9, num_corrupted_samples))
+
+    # Grid size: 4 rows × (1 clean + num_corrupted_samples) columns
+    n_rows = 4
+    n_cols = 1 + num_corrupted_samples
+
+    # Auto-calculate window size if not provided
+    if window_size is None:
+        panel_height = 900
+        panel_width = 900
+        window_size = (panel_width * n_cols, panel_height * n_rows)
+
+    # Create plotter with grid layout
+    plotter = setup_pyvista_plotter(
+        window_size=window_size,
+        off_screen=True,
+        shape=(n_rows, n_cols)
+    )
+
+    # Compute consistent color limits
+    clim = (np.percentile(clean_volume.cpu().numpy(), 1),
+            np.percentile(clean_volume.cpu().numpy(), 99))
+
+    # Row 0: MAE (masking only, no noise)
+    for col_idx in range(n_cols):
+        plotter.subplot(0, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # MAE corrupted: render clean volume with opacity mask (masked regions transparent)
+            # Generate new random masking pattern for each sample
+            mae_result = mae_corruption(
+                clean_volume,
+                mask_percentage=mask_percentage,
+                patch_size=patch_size
+            )
+            # Use spatial_mask as opacity: 1=visible (opaque), 0=masked (transparent)
+            opacity_mask = mae_result['spatial_mask'].float()
+
+            render_3d_volume(
+                clean_volume,  # Render clean volume, not masked_volume
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim,
+                opacity_mask=opacity_mask  # Apply opacity mask
+            )
+
+    # Row 1: Diffusion only (no masking)
+    for col_idx in range(n_cols):
+        plotter.subplot(1, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # Apply DDPM noise only, no masking
+            corruption_level = corruption_levels[col_idx - 1]
+            noisy_volume = corrupt(clean_volume, corruption_level, sde=sde, max_sigma=max_sigma)
+
+            render_3d_volume(
+                noisy_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+
+    # Row 2: DiffMAE (masking + noise ONLY on masked regions)
+    for col_idx in range(n_cols):
+        plotter.subplot(2, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # DiffMAE corrupted: different masking patterns + increasing noise on masked regions
+            corruption_level = corruption_levels[col_idx - 1]
+            diffmae_result = diffmae_corruption(
+                clean_volume,
+                mask_percentage=mask_percentage,
+                timestep=corruption_level,
+                patch_size=patch_size,
+                sde=sde,
+                max_sigma=max_sigma
+            )
+
+            render_3d_volume(
+                diffmae_result['diffmae_corrupted'],
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+
+    # Row 3: MDAE (dual corruption: both masking and noise increase)
+    for col_idx in range(n_cols):
+        plotter.subplot(3, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # MDAE corrupted: both masking and noise increase together
+            corruption_level = corruption_levels[col_idx - 1]
+            mdae_result = dual_corruption(
+                clean_volume,
+                mask_percentage=corruption_level,
+                timestep=corruption_level,
+                patch_size=patch_size,
+                sde=sde,
+                max_sigma=max_sigma
+            )
+
+            render_3d_volume(
+                mdae_result['doubly_corrupted'],
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+
+    # Link cameras for synchronized views
+    plotter.link_views()
+
+    # Save if requested
+    if save_path:
+        save_publication_image(plotter, save_path)
+
+    return plotter
+
+
+def create_comparison_3rows(
+    clean_volume: Union[torch.Tensor, np.ndarray],
+    num_corrupted_samples: int = 5,
+    corruption_levels: Optional[List[float]] = None,
+    mask_percentage: float = 0.75,
+    patch_size: int = 16,
+    transparency_level: str = 'medium',
+    window_size: Optional[Tuple[int, int]] = None,
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0,
+    save_path: Optional[str] = None
+) -> pv.Plotter:
+    """
+    Create 3-row comparison visualization showing MAE, Diffusion, and MDAE.
+
+    Rows:
+    - Row 1 (MAE): 75% masking only, different patterns, no noise
+    - Row 2 (Diffusion): DDPM noise only at different levels, no masking
+    - Row 3 (MDAE): Progressive dual corruption (masking + noise both increase)
+
+    Args:
+        clean_volume: Clean 3D volume [D, H, W]
+        num_corrupted_samples: Number of corrupted samples per row (default: 5)
+        corruption_levels: Corruption levels for noise (default: [0.2, 0.375, 0.55, 0.725, 0.9])
+        mask_percentage: Masking percentage for MAE (default: 0.75)
+        patch_size: Patch size for blocky masking
+        transparency_level: Transparency level ('low', 'medium', 'high')
+        window_size: Window size (width, height). If None, auto-calculated
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+        save_path: Optional path to save image
+
+    Returns:
+        plotter: PyVista plotter with 3×(num_corrupted_samples+1) grid
+    """
+    from corruption_utils import mae_corruption, dual_corruption, corrupt
+
+    # Convert to tensor if needed
+    if isinstance(clean_volume, np.ndarray):
+        clean_volume = torch.from_numpy(clean_volume).float()
+
+    # Default corruption levels
+    if corruption_levels is None:
+        corruption_levels = list(np.linspace(0.2, 0.9, num_corrupted_samples))
+
+    # Grid size: 3 rows × (1 clean + num_corrupted_samples) columns
+    n_rows = 3
+    n_cols = 1 + num_corrupted_samples
+
+    # Auto-calculate window size if not provided
+    if window_size is None:
+        panel_height = 900
+        panel_width = 900
+        window_size = (panel_width * n_cols, panel_height * n_rows)
+
+    # Create plotter with grid layout
+    plotter = setup_pyvista_plotter(
+        window_size=window_size,
+        off_screen=True,
+        shape=(n_rows, n_cols)
+    )
+
+    # Compute consistent color limits
+    clim = (np.percentile(clean_volume.cpu().numpy(), 1),
+            np.percentile(clean_volume.cpu().numpy(), 99))
+
+    # Row 0: MAE (masking only, no noise)
+    for col_idx in range(n_cols):
+        plotter.subplot(0, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # MAE corrupted: render clean volume with opacity mask (masked regions transparent)
+            # Generate new random masking pattern for each sample
+            mae_result = mae_corruption(
+                clean_volume,
+                mask_percentage=mask_percentage,
+                patch_size=patch_size
+            )
+            # Use spatial_mask as opacity: 1=visible (opaque), 0=masked (transparent)
+            opacity_mask = mae_result['spatial_mask'].float()
+
+            render_3d_volume(
+                clean_volume,  # Render clean volume, not masked_volume
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim,
+                opacity_mask=opacity_mask  # Apply opacity mask
+            )
+
+    # Row 1: Diffusion only (no masking)
+    for col_idx in range(n_cols):
+        plotter.subplot(1, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # Apply DDPM noise only, no masking
+            corruption_level = corruption_levels[col_idx - 1]
+            noisy_volume = corrupt(clean_volume, corruption_level, sde=sde, max_sigma=max_sigma)
+
+            render_3d_volume(
+                noisy_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+
+    # Row 2: MDAE (dual corruption: both masking and noise increase)
+    for col_idx in range(n_cols):
+        plotter.subplot(2, col_idx)
+
+        if col_idx == 0:
+            # Clean volume
+            render_3d_volume(
+                clean_volume,
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+        else:
+            # MDAE corrupted: both masking and noise increase together
+            corruption_level = corruption_levels[col_idx - 1]
+            mdae_result = dual_corruption(
+                clean_volume,
+                mask_percentage=corruption_level,
+                timestep=corruption_level,
+                patch_size=patch_size,
+                sde=sde,
+                max_sigma=max_sigma
+            )
+
+            render_3d_volume(
+                mdae_result['doubly_corrupted'],
+                plotter,
+                transparency_level=transparency_level,
+                cmap='gray',
+                title='',
+                camera_position='iso',
+                clim=clim
+            )
+
+    # Link cameras for synchronized views
+    plotter.link_views()
+
+    # Save if requested
+    if save_path:
+        save_publication_image(plotter, save_path)
+
+    return plotter
+
+
 if __name__ == "__main__":
     # Quick test
     print("Testing PyVista utilities...")

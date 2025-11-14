@@ -1,0 +1,29 @@
+# MDAE Visualization Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.21.0
+torch>=2.0.0
+matplotlib>=3.5.0
+seaborn>=0.12.0
+
+# Image processing
+scipy>=1.7.0
+scikit-image>=0.19.0
+
+# Optional: For loading medical imaging data
+nibabel>=5.0.0
+
+# Optional: For Jupyter notebook support
+jupyter>=1.0.0
+ipywidgets>=8.0.0
+
+# 3D Visualization with PyVista
+pyvista>=0.43.0
+vtk>=9.2.0
+imageio>=2.31.0
+pillow>=10.0.0
+
+# Optional: For M4Raw dataset support
+h5py>=3.8.0
+fastmri>=0.3.0

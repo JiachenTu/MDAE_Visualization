@@ -465,6 +465,129 @@ def dual_corruption_2d(
     return doubly_corrupted, spatial_mask
 
 
+def mae_corruption(
+    clean_volume: torch.Tensor,
+    mask_percentage: float = 0.75,
+    patch_size: int = 16
+) -> dict:
+    """
+    Apply MAE (Masked AutoEncoder) corruption: spatial masking only, no noise.
+
+    Args:
+        clean_volume: Clean input volume [C, D, H, W] or [D, H, W]
+        mask_percentage: Percentage of patches to mask (default: 0.75)
+        patch_size: Size of cubic patches for blocky masking
+
+    Returns:
+        dict containing:
+            - masked_volume: Volume with masked regions set to zero
+            - spatial_mask: Binary mask (1=visible, 0=masked)
+            - clean_volume: Original clean volume
+    """
+    # Handle both 3D [D,H,W] and 4D [C,D,H,W] inputs
+    if clean_volume.ndim == 3:
+        volume_shape = clean_volume.shape
+        has_channel_dim = False
+    else:
+        volume_shape = clean_volume.shape[1:]  # (D, H, W)
+        has_channel_dim = True
+
+    # Create spatial mask
+    spatial_mask = create_blocky_mask(volume_shape, patch_size, mask_percentage)
+
+    # Expand mask if needed
+    if has_channel_dim:
+        mask_expanded = spatial_mask.unsqueeze(0)
+    else:
+        mask_expanded = spatial_mask
+
+    # Apply mask: keep visible regions, zero out masked regions
+    masked_volume = clean_volume * mask_expanded
+
+    return {
+        'masked_volume': masked_volume,
+        'spatial_mask': spatial_mask,
+        'clean_volume': clean_volume,
+        'mask_percentage': mask_percentage
+    }
+
+
+def diffmae_corruption(
+    clean_volume: torch.Tensor,
+    mask_percentage: float = 0.75,
+    timestep: float = 0.5,
+    patch_size: int = 16,
+    beta_min: float = 1e-4,
+    beta_max: float = 0.02,
+    sde: str = 'ddpm',
+    max_sigma: float = 5.0
+) -> dict:
+    """
+    Apply DiffMAE corruption: DDPM diffusion ONLY on masked regions.
+    Visible regions remain clean (unchanged).
+
+    This matches the implementation in DiffMAETrainer.apply_diffusion_to_masked_regions:
+    - network_input = visible_regions (clean) + noisy_masked (diffused)
+
+    Args:
+        clean_volume: Clean input volume [C, D, H, W] or [D, H, W]
+        mask_percentage: Percentage of patches to mask (default: 0.75)
+        timestep: Diffusion timestep t ∈ [0, 1]
+        patch_size: Size of cubic patches for blocky masking
+        beta_min: Minimum noise schedule parameter
+        beta_max: Maximum noise schedule parameter
+        sde: SDE type ('ddpm', 've', 'flow')
+        max_sigma: Maximum sigma for VE SDE
+
+    Returns:
+        dict containing:
+            - diffmae_corrupted: Visible (clean) + Masked (noisy)
+            - spatial_mask: Binary mask (1=visible, 0=masked)
+            - noisy_masked_only: Only the noisy masked regions
+            - clean_volume: Original clean volume
+    """
+    # Handle both 3D [D,H,W] and 4D [C,D,H,W] inputs
+    if clean_volume.ndim == 3:
+        volume_shape = clean_volume.shape
+        has_channel_dim = False
+    else:
+        volume_shape = clean_volume.shape[1:]  # (D, H, W)
+        has_channel_dim = True
+
+    # Step 1: Create spatial mask
+    spatial_mask = create_blocky_mask(volume_shape, patch_size, mask_percentage)
+
+    # Expand mask if needed
+    if has_channel_dim:
+        mask_expanded = spatial_mask.unsqueeze(0)
+    else:
+        mask_expanded = spatial_mask
+
+    # Step 2: Separate visible and masked regions
+    visible_regions = clean_volume * mask_expanded  # Keep visible clean
+    masked_regions = clean_volume * (1 - mask_expanded)  # Extract masked
+
+    # Step 3: Apply diffusion ONLY to masked regions
+    # Use the corrupt() function which handles normalization properly
+    noisy_masked = corrupt(masked_regions, timestep, sde=sde, max_sigma=max_sigma)
+
+    # Ensure noise stays only in masked regions
+    noisy_masked = noisy_masked * (1 - mask_expanded)
+
+    # Step 4: Combine clean visible + noisy masked
+    diffmae_corrupted = visible_regions + noisy_masked
+
+    return {
+        'diffmae_corrupted': diffmae_corrupted,
+        'spatial_mask': spatial_mask,
+        'noisy_masked_only': noisy_masked,
+        'visible_regions': visible_regions,
+        'clean_volume': clean_volume,
+        'timestep': timestep,
+        'mask_percentage': mask_percentage
+    }
+
+
 if __name__ == "__main__":
     # Quick test
     print("Testing dual corruption utilities...")

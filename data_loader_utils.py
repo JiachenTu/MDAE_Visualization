@@ -296,7 +296,7 @@ def load_brats_sample(
         cache_path = Path(cache_dir) / f"{dataset}_{case_id}_{modality}.npz"
         if cache_path.exists():
             print(f"Loading from cache: {cache_path}")
-            data = np.load(cache_path)
+            data = np.load(cache_path, allow_pickle=True)
             volume = torch.from_numpy(data['volume']).float()
             metadata = dict(data['metadata'].item())
             return volume, metadata
